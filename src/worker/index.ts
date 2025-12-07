@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
 import {
   exchangeCodeForSessionToken,
   getOAuthRedirectUrl,
@@ -6,12 +7,11 @@ import {
   deleteSession,
   MOCHA_SESSION_TOKEN_COOKIE_NAME,
 } from "@getmocha/users-service/backend";
-import { getCookie, setCookie } from "hono/cookie";
 import { CreateActivitySchema, UpdateActivitySchema } from "@/shared/types";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// OAuth routes
+// Auth routes
 app.get("/api/oauth/google/redirect_url", async (c) => {
   const redirectUrl = await getOAuthRedirectUrl("google", {
     apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
@@ -38,7 +38,7 @@ app.post("/api/sessions", async (c) => {
     path: "/",
     sameSite: "none",
     secure: true,
-    maxAge: 60 * 24 * 60 * 60,
+    maxAge: 60 * 24 * 60 * 60, // 60 days
   });
 
   return c.json({ success: true }, 200);
@@ -72,36 +72,43 @@ app.get("/api/logout", async (c) => {
 // Activity routes
 app.get("/api/activities", authMiddleware, async (c) => {
   const user = c.get("user");
-  const date = c.req.query("date");
-
-  if (!date) {
-    return c.json({ error: "Date parameter is required" }, 400);
-  }
-
+  
   const { results } = await c.env.DB.prepare(
-    "SELECT * FROM activities WHERE user_id = ? AND activity_date = ? ORDER BY created_at DESC"
+    "SELECT * FROM activities WHERE user_id = ? ORDER BY date DESC, created_at DESC"
   )
-    .bind(user.id, date)
+    .bind(user!.id)
     .all();
 
   return c.json(results);
 });
 
-app.get("/api/activities/stats", authMiddleware, async (c) => {
+app.get("/api/activities/by-date/:date", authMiddleware, async (c) => {
   const user = c.get("user");
+  const date = c.req.param("date");
+  
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM activities WHERE user_id = ? AND date = ? ORDER BY created_at DESC"
+  )
+    .bind(user!.id, date)
+    .all();
 
+  return c.json(results);
+});
+
+app.get("/api/activities/summary", authMiddleware, async (c) => {
+  const user = c.get("user");
+  
   const { results } = await c.env.DB.prepare(
     `SELECT 
-      activity_date,
-      category,
-      SUM(minutes) as total_minutes
+      date,
+      SUM(minutes) as total_minutes,
+      COUNT(*) as activity_count
     FROM activities 
     WHERE user_id = ? 
-    GROUP BY activity_date, category
-    ORDER BY activity_date DESC
-    LIMIT 30`
+    GROUP BY date 
+    ORDER BY date DESC`
   )
-    .bind(user.id)
+    .bind(user!.id)
     .all();
 
   return c.json(results);
@@ -110,33 +117,32 @@ app.get("/api/activities/stats", authMiddleware, async (c) => {
 app.post("/api/activities", authMiddleware, async (c) => {
   const user = c.get("user");
   const body = await c.req.json();
-
+  
   const validation = CreateActivitySchema.safeParse(body);
   if (!validation.success) {
-    return c.json({ error: "Invalid activity data", details: validation.error }, 400);
+    return c.json({ error: validation.error.errors }, 400);
   }
 
-  const { name, category, minutes, activity_date } = validation.data;
+  const { date, name, category, minutes } = validation.data;
 
-  // Check total minutes for the day
+  // Check if adding this activity would exceed 1440 minutes for the day
   const { total_minutes } = await c.env.DB.prepare(
-    "SELECT COALESCE(SUM(minutes), 0) as total_minutes FROM activities WHERE user_id = ? AND activity_date = ?"
+    "SELECT COALESCE(SUM(minutes), 0) as total_minutes FROM activities WHERE user_id = ? AND date = ?"
   )
-    .bind(user.id, activity_date)
+    .bind(user!.id, date)
     .first() as { total_minutes: number };
 
   if (total_minutes + minutes > 1440) {
     return c.json({ 
-      error: "Cannot add activity. Total minutes for the day would exceed 1440 (24 hours).",
-      current_total: total_minutes,
-      remaining: 1440 - total_minutes
+      error: `Cannot add activity. Would exceed 1440 minutes for ${date}. Current total: ${total_minutes} minutes.` 
     }, 400);
   }
 
   const result = await c.env.DB.prepare(
-    "INSERT INTO activities (user_id, activity_date, name, category, minutes) VALUES (?, ?, ?, ?, ?)"
+    `INSERT INTO activities (user_id, date, name, category, minutes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
   )
-    .bind(user.id, activity_date, name, category, minutes)
+    .bind(user!.id, date, name, category, minutes)
     .run();
 
   const activity = await c.env.DB.prepare(
@@ -152,44 +158,66 @@ app.put("/api/activities/:id", authMiddleware, async (c) => {
   const user = c.get("user");
   const id = c.req.param("id");
   const body = await c.req.json();
-
+  
   const validation = UpdateActivitySchema.safeParse(body);
   if (!validation.success) {
-    return c.json({ error: "Invalid activity data", details: validation.error }, 400);
+    return c.json({ error: validation.error.errors }, 400);
   }
 
-  const { name, category, minutes } = validation.data;
-
-  // Get the existing activity
+  // Check if activity exists and belongs to user
   const existing = await c.env.DB.prepare(
     "SELECT * FROM activities WHERE id = ? AND user_id = ?"
   )
-    .bind(id, user.id)
+    .bind(id, user!.id)
     .first();
 
   if (!existing) {
     return c.json({ error: "Activity not found" }, 404);
   }
 
-  // Check total minutes for the day (excluding current activity)
-  const { total_minutes } = await c.env.DB.prepare(
-    "SELECT COALESCE(SUM(minutes), 0) as total_minutes FROM activities WHERE user_id = ? AND activity_date = ? AND id != ?"
-  )
-    .bind(user.id, existing.activity_date, id)
-    .first() as { total_minutes: number };
+  const updates = validation.data;
+  
+  // If minutes are being updated, check the daily limit
+  if (updates.minutes !== undefined) {
+    const { total_minutes } = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(minutes), 0) as total_minutes FROM activities WHERE user_id = ? AND date = ? AND id != ?"
+    )
+      .bind(user!.id, (existing as any).date, id)
+      .first() as { total_minutes: number };
 
-  if (total_minutes + minutes > 1440) {
-    return c.json({ 
-      error: "Cannot update activity. Total minutes for the day would exceed 1440 (24 hours).",
-      current_total: total_minutes,
-      remaining: 1440 - total_minutes
-    }, 400);
+    if (total_minutes + updates.minutes > 1440) {
+      return c.json({ 
+        error: `Cannot update activity. Would exceed 1440 minutes for this day. Current total (excluding this activity): ${total_minutes} minutes.` 
+      }, 400);
+    }
   }
 
+  const setClauses: string[] = [];
+  const values: any[] = [];
+
+  if (updates.name !== undefined) {
+    setClauses.push("name = ?");
+    values.push(updates.name);
+  }
+  if (updates.category !== undefined) {
+    setClauses.push("category = ?");
+    values.push(updates.category);
+  }
+  if (updates.minutes !== undefined) {
+    setClauses.push("minutes = ?");
+    values.push(updates.minutes);
+  }
+
+  if (setClauses.length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
+  }
+
+  setClauses.push("updated_at = datetime('now')");
+
   await c.env.DB.prepare(
-    "UPDATE activities SET name = ?, category = ?, minutes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?"
+    `UPDATE activities SET ${setClauses.join(", ")} WHERE id = ? AND user_id = ?`
   )
-    .bind(name, category, minutes, id, user.id)
+    .bind(...values, id, user!.id)
     .run();
 
   const activity = await c.env.DB.prepare(
@@ -205,15 +233,21 @@ app.delete("/api/activities/:id", authMiddleware, async (c) => {
   const user = c.get("user");
   const id = c.req.param("id");
 
-  const result = await c.env.DB.prepare(
-    "DELETE FROM activities WHERE id = ? AND user_id = ?"
+  const existing = await c.env.DB.prepare(
+    "SELECT * FROM activities WHERE id = ? AND user_id = ?"
   )
-    .bind(id, user.id)
-    .run();
+    .bind(id, user!.id)
+    .first();
 
-  if (result.meta.changes === 0) {
+  if (!existing) {
     return c.json({ error: "Activity not found" }, 404);
   }
+
+  await c.env.DB.prepare(
+    "DELETE FROM activities WHERE id = ? AND user_id = ?"
+  )
+    .bind(id, user!.id)
+    .run();
 
   return c.json({ success: true });
 });
