@@ -1,82 +1,83 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import type { Activity } from "@/shared/types";
 
-export function useActivities(selectedDate: string) {
+export function useActivities() {
   const [activities, setActivities] = useState<Activity[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchActivities = useCallback(async () => {
-    setIsLoading(true);
+  const fetchActivities = async () => {
     try {
-      const response = await fetch(`/api/activities?date=${selectedDate}`);
-      if (response.ok) {
-        const data = await response.json();
-        setActivities(data);
-      }
-    } catch (error) {
-      console.error("Failed to fetch activities:", error);
+      setLoading(true);
+      const response = await fetch("/api/activities");
+      if (!response.ok) throw new Error("Failed to fetch activities");
+      const data = await response.json();
+      setActivities(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, [selectedDate]);
+  };
 
   useEffect(() => {
     fetchActivities();
-  }, [fetchActivities]);
-
-  const addActivity = useCallback((activity: Activity) => {
-    setActivities((prev) => [activity, ...prev]);
   }, []);
 
-  const updateActivity = useCallback(async (id: number, name: string, category: string, minutes: number) => {
+  return { activities, loading, error, refetch: fetchActivities };
+}
+
+export function useActivitiesByDate(date: string) {
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchActivities = async () => {
     try {
-      const response = await fetch(`/api/activities/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, category, minutes }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to update activity");
-      }
-
-      const updated = await response.json();
-      setActivities((prev) =>
-        prev.map((activity) => (activity.id === id ? updated : activity))
-      );
-    } catch (error) {
-      alert(error instanceof Error ? error.message : "Failed to update activity");
-      throw error;
+      setLoading(true);
+      const response = await fetch(`/api/activities/by-date/${date}`);
+      if (!response.ok) throw new Error("Failed to fetch activities");
+      const data = await response.json();
+      setActivities(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
     }
-  }, []);
-
-  const deleteActivity = useCallback(async (id: number) => {
-    try {
-      const response = await fetch(`/api/activities/${id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to delete activity");
-      }
-
-      setActivities((prev) => prev.filter((activity) => activity.id !== id));
-    } catch (error) {
-      alert("Failed to delete activity");
-      throw error;
-    }
-  }, []);
-
-  const totalMinutes = activities.reduce((sum, activity) => sum + activity.minutes, 0);
-
-  return {
-    activities,
-    totalMinutes,
-    isLoading,
-    addActivity,
-    updateActivity,
-    deleteActivity,
-    refetch: fetchActivities,
   };
+
+  useEffect(() => {
+    fetchActivities();
+  }, [date]);
+
+  return { activities, loading, error, refetch: fetchActivities };
+}
+
+export function useActivitySummary() {
+  const [summary, setSummary] = useState<Array<{ date: string; total_minutes: number; activity_count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSummary = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch("/api/activities/summary");
+      if (!response.ok) throw new Error("Failed to fetch summary");
+      const data = await response.json();
+      setSummary(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSummary();
+  }, []);
+
+  return { summary, loading, error, refetch: fetchSummary };
 }
