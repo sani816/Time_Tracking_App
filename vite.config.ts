@@ -5,14 +5,23 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import { mochaPlugins } from "@getmocha/vite-plugins";
 
 export default defineConfig({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  plugins: [...mochaPlugins(process.env as any), react(), cloudflare()],
+  base: '/Time_Tracking_App/', // ✅ REQUIRED FOR GITHUB PAGES
+
+  plugins: [
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...mochaPlugins(process.env as any),
+    react(),
+    cloudflare()
+  ],
+
   server: {
     allowedHosts: true,
   },
+
   build: {
     chunkSizeWarningLimit: 5000,
   },
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
