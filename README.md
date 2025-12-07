@@ -9,7 +9,7 @@ The app allows users to log activities, visualize daily progress, and generate a
 
 🚀 Live Demo:
 -------------
-🔗 https://your-deployment-link.com
+🔗  https://sani816.github.io/Time_Tracking_App/
 
 🎥 Video Walkthrough (2–5 minutes):
 --------------------------------------
