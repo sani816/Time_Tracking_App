@@ -13,7 +13,7 @@ The app allows users to log activities, visualize daily progress, and generate a
 
 🎥 Video Walkthrough (2–5 minutes):
 --------------------------------------
-📺 https://your-demo-video-link.com
+📺 https://drive.google.com/drive/folders/1OH-6bPQgZZk_pLhod6zatiJ-_sNpRXKU?usp=sharing
 
 
 🛠️ Tech Stack:
